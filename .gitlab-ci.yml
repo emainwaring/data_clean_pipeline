@@ -1,0 +1,66 @@
+
+
+stages:
+  - build_images
+  - compile_and_upload_pipeline_template
+  - create_pipeline_schedule
+
+variables:
+  GCP_PROJECT: your-project
+  IMAGE_REGISTRY: us-west1-docker.pkg.dev/your-project/ptp-pipeline-images
+  KFP_REGISTRY_URL: https://us-west1-kfp.pkg.dev/your-project/ptp-kfp-pipeline-templates
+  SCHEDULE_DISPLAY_NAME: data-cleaning-pipeline
+
+
+build_image:
+  stage: build_images
+  when: manual
+  image: google/cloud-sdk:latest
+  script:
+    - echo "$SERVICE_ACCOUNT_KEY_FILE_JSON" > keyfile.json
+    - gcloud auth activate-service-account your-service-account@your-project.iam.gserviceaccount.com --key-file=keyfile.json
+    - gcloud config set project "$GCP_PROJECT"
+    - gcloud auth configure-docker us-west1-docker.pkg.dev
+    - |
+      for component_directory in pipeline/component_images/*; do
+        component_name=$(basename $component_directory)
+        docker build -t $IMAGE_REGISTRY/$component_name:latest $component_directory
+        docker push $IMAGE_REGISTRY/$component_name:latest
+      done
+
+compile_and_upload_pipeline_template:
+  stage: compile_and_upload_pipeline_template
+  image: google/cloud-sdk:latest
+  script:
+    - |
+      apt-get update && apt-get install -y unixodbc-dev
+      pip install -r pipeline/requirements.txt
+      pip install google-auth
+      echo "$SERVICE_ACCOUNT_KEY_FILE_JSON" > keyfile.json
+      export GOOGLE_APPLICATION_CREDENTIALS=keyfile.json
+      python3 pipeline/data_cleaning_pipeline.py
+      python3 -c "
+      from google.oauth2 import service_account
+      from kfp.registry import RegistryClient
+      import os
+
+      credentials = service_account.Credentials.from_service_account_file(os.environ['GOOGLE_APPLICATION_CREDENTIALS'], scopes=['https://www.googleapis.com/auth/cloud-platform'])
+      client = RegistryClient(host='$KFP_REGISTRY_URL', auth=credentials)
+      template_name, version_name = client.upload_pipeline(file_name='data_cleaning_pipeline.yaml', tags=['$CI_COMMIT_SHORT_SHA', 'latest'])
+      print(f'Template Name: {template_name}')
+      print(f'Version Name: {version_name}')
+      "
+
+create_pipeline_schedule:
+  stage: create_pipeline_schedule
+  when: manual
+  image: google/cloud-sdk:latest
+  script:
+    - pip install google-cloud-aiplatform[pipelines]
+    - pip install kfp==2.3.0
+    - echo "$SERVICE_ACCOUNT_KEY_FILE_JSON" > keyfile.json
+    - export GOOGLE_APPLICATION_CREDENTIALS=keyfile.json
+    - gcloud auth activate-service-account your-service-accounte@your-project.iam.gserviceaccount.com --key-file=keyfile.json --project="$GCP_PROJECT"
+    - python3 pipeline/create_pipeline_schedule.py
+
+

@@ -1,0 +1,5 @@
+kfp==2.3.0
+numpy==1.23.2
+pandas==1.4.4
+plotly==5.13.0
+pytest==7.4.3
